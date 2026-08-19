@@ -58,7 +58,7 @@ async function fetchOpportunities() {
 
   if (res.status === 401 || res.status === 403) {
     await notify(
-      "⚠️ Askable token expired",
+      "Askable token expired",
       "The auth token has expired — grab a fresh one from DevTools and update the ASKABLE_TOKEN secret."
     );
     throw new Error(`Auth failed: ${res.status}`);
@@ -70,6 +70,17 @@ async function fetchOpportunities() {
 
   const json = await res.json();
   if (json.errors) {
+    // Askable's GraphQL API returns HTTP 200 even for auth failures, with the
+    // real status embedded in extensions.code (discovered 2026-08-19: a real
+    // token expiry silently failed for ~4 hours because only the HTTP-level
+    // 401/403 check above was firing the alert).
+    const authError = json.errors.some((e) => e.extensions?.code === 401 || e.extensions?.code === 403);
+    if (authError) {
+      await notify(
+        "Askable token expired",
+        "The auth token has expired — grab a fresh one from DevTools and update the ASKABLE_TOKEN secret."
+      );
+    }
     throw new Error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
   }
 
