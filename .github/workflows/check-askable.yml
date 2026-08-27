@@ -24,7 +24,8 @@ jobs:
 
       - name: Run check-askable
         env:
-          ASKABLE_TOKEN: ${{ secrets.ASKABLE_TOKEN }}
+          ASKABLE_REFRESH_TOKEN: ${{ secrets.ASKABLE_REFRESH_TOKEN }}
+          GH_SECRETS_PAT: ${{ secrets.GH_SECRETS_PAT }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ASKABLE_USER_ID: ${{ secrets.ASKABLE_USER_ID }}
         run: node check-askable.js

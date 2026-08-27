@@ -3,14 +3,19 @@
 // Run on a schedule (see .github/workflows/check-askable.yml)
 
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import { execFileSync } from "child_process";
 
-const ASKABLE_TOKEN = process.env.ASKABLE_TOKEN;
+// Public SPA client id (visible in every issued JWT's `azp` claim) — not a secret.
+const KINDE_CLIENT_ID = "182a37880de0443b8748b4af3a6d2f0f";
+
+const ASKABLE_REFRESH_TOKEN = process.env.ASKABLE_REFRESH_TOKEN;
+const GH_SECRETS_PAT = process.env.GH_SECRETS_PAT;
 const NTFY_TOPIC = process.env.NTFY_TOPIC; // e.g. "dave-askable-alerts-x7q2"
 const USER_ID = process.env.ASKABLE_USER_ID; // the _user_id from the captured request
 const SEEN_FILE = "seen-opportunities.json";
 
-if (!ASKABLE_TOKEN || !NTFY_TOPIC || !USER_ID) {
-  console.error("Missing required env vars: ASKABLE_TOKEN, NTFY_TOPIC, ASKABLE_USER_ID");
+if (!ASKABLE_REFRESH_TOKEN || !GH_SECRETS_PAT || !NTFY_TOPIC || !USER_ID) {
+  console.error("Missing required env vars: ASKABLE_REFRESH_TOKEN, GH_SECRETS_PAT, NTFY_TOPIC, ASKABLE_USER_ID");
   process.exit(1);
 }
 
@@ -35,11 +40,45 @@ const QUERY = `query Opportunities($search: OpportunitySearchInput!) {
   }
 }`;
 
-async function fetchOpportunities() {
+// Kinde rotates the refresh token on every use (confirmed via Network tab
+// 2026-08-27: response includes a new `refresh_token` differing from the one
+// sent). The new value is persisted to the GH secret *before* anything else
+// happens, so a crash later in the run never strands an unrecoverable session
+// — worst case is a wasted refresh, not a broken token chain.
+async function refreshAccessToken() {
+  const res = await fetch("https://auth.askable.com/oauth2/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Cookie: `refresh_token=${ASKABLE_REFRESH_TOKEN}`,
+    },
+    body: `grant_type=refresh_token&client_id=${KINDE_CLIENT_ID}`,
+  });
+
+  if (!res.ok) {
+    await notify(
+      "Askable refresh token expired",
+      "The refresh token was rejected — it's likely expired or was revoked. Do a fresh browser login and update the ASKABLE_REFRESH_TOKEN secret by hand."
+    );
+    throw new Error(`Refresh failed: ${res.status} ${await res.text()}`);
+  }
+
+  const json = await res.json();
+  return { accessToken: json.access_token, refreshToken: json.refresh_token };
+}
+
+function saveRefreshToken(newRefreshToken) {
+  execFileSync("gh", ["secret", "set", "ASKABLE_REFRESH_TOKEN", "--body", newRefreshToken], {
+    env: { ...process.env, GH_TOKEN: GH_SECRETS_PAT },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+}
+
+async function fetchOpportunities(accessToken) {
   const res = await fetch("https://graphql.askable.com/graphql", {
     method: "POST",
     headers: {
-      Authorization: ASKABLE_TOKEN,
+      Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
       Accept: "application/json",
     },
@@ -58,8 +97,8 @@ async function fetchOpportunities() {
 
   if (res.status === 401 || res.status === 403) {
     await notify(
-      "Askable token expired",
-      "The auth token has expired — grab a fresh one from DevTools and update the ASKABLE_TOKEN secret."
+      "Askable auth failing after refresh",
+      "The access token was rejected right after a successful refresh — something's wrong beyond normal expiry. Needs investigation."
     );
     throw new Error(`Auth failed: ${res.status}`);
   }
@@ -77,8 +116,8 @@ async function fetchOpportunities() {
     const authError = json.errors.some((e) => e.extensions?.code === 401 || e.extensions?.code === 403);
     if (authError) {
       await notify(
-        "Askable token expired",
-        "The auth token has expired — grab a fresh one from DevTools and update the ASKABLE_TOKEN secret."
+        "Askable auth failing after refresh",
+        "The GraphQL API returned an auth error right after a successful token refresh — something's wrong beyond normal expiry. Needs investigation."
       );
     }
     throw new Error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
@@ -113,7 +152,19 @@ function saveSeenIds(ids) {
 }
 
 async function main() {
-  const opportunities = await fetchOpportunities();
+  const { accessToken, refreshToken } = await refreshAccessToken();
+
+  try {
+    saveRefreshToken(refreshToken);
+  } catch (err) {
+    await notify(
+      "Askable refresh token NOT saved",
+      "Refresh succeeded but writing the rotated token back to GH_SECRETS_PAT failed. The old refresh token is now burned — the next run will fail unless this is fixed by hand."
+    );
+    throw err;
+  }
+
+  const opportunities = await fetchOpportunities(accessToken);
   const seen = loadSeenIds();
   const currentIds = new Set(opportunities.map((o) => o._id));
 
