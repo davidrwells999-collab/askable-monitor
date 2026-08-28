@@ -165,6 +165,17 @@ async function main() {
   }
 
   const opportunities = await fetchOpportunities(accessToken);
+
+  if (process.env.LIST_ONLY === "true") {
+    for (const opp of opportunities) {
+      const incentive = opp.config?.incentive;
+      const reward = incentive ? `${incentive.currency_symbol}${incentive.value}` : "reward unknown";
+      console.log(`- ${opp.name || "(untitled)"} | ${reward} | ${opp.type} | ${opp.status} | approved ${opp.approved_date}`);
+    }
+    console.log(`${opportunities.length} live total`);
+    return;
+  }
+
   const seen = loadSeenIds();
   const currentIds = new Set(opportunities.map((o) => o._id));
 

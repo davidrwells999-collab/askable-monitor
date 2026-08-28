@@ -3,7 +3,12 @@ name: Check Askable
 on:
   schedule:
     - cron: "*/5 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      list_only:
+        description: "List all currently live opportunities instead of checking for new ones"
+        required: false
+        default: "false"
 
 permissions:
   contents: write
@@ -28,6 +33,7 @@ jobs:
           GH_SECRETS_PAT: ${{ secrets.GH_SECRETS_PAT }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ASKABLE_USER_ID: ${{ secrets.ASKABLE_USER_ID }}
+          LIST_ONLY: ${{ github.event.inputs.list_only || 'false' }}
         run: node check-askable.js
 
       - name: Persist seen-opportunities.json
