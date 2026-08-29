@@ -1,7 +1,14 @@
-# Multi-user plan (not yet implemented)
+# Multi-user plan
 
 Idea: run a separate alert for a second person (e.g. spouse) instead of
-piggybacking one account. Captured 2026-08-28, deferred.
+piggybacking one account. Captured 2026-08-28.
+
+**Status: Option B implemented 2026-08-29.** `check-askable.js` loops over a
+`USERS` array (`dave`, `rachel`), each with its own refresh token / user id /
+ntfy topic / seen file. A user whose env vars are absent is skipped, so
+`rachel` stays dormant until her three secrets are added:
+`ASKABLE_REFRESH_TOKEN_RACHEL`, `ASKABLE_USER_ID_RACHEL`,
+`NTFY_TOPIC_RACHEL` (the last is already set). See the bootstrap steps below.
 
 The whole script is currently single-tenant: one `ASKABLE_REFRESH_TOKEN`, one
 `ASKABLE_USER_ID`, one `NTFY_TOPIC`, one `seen-opportunities.json`, one
