@@ -97,7 +97,13 @@ function saveRefreshToken(secretName, newRefreshToken) {
   });
 }
 
-async function fetchOpportunities(user, accessToken) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// One opportunities request. Returns { authFail: true, detail } on a 401/403
+// (HTTP-level or embedded in a GraphQL error's extensions.code), { opportunities }
+// on success, and throws for any other failure. Never notifies — the caller
+// decides whether an auth failure is transient or worth an alert.
+async function requestOpportunities(user, accessToken) {
   const res = await fetch("https://graphql.askable.com/graphql", {
     method: "POST",
     headers: {
@@ -119,12 +125,7 @@ async function fetchOpportunities(user, accessToken) {
   });
 
   if (res.status === 401 || res.status === 403) {
-    await notify(
-      user.ntfyTopic,
-      "Askable auth failing after refresh",
-      "The access token was rejected right after a successful refresh — something's wrong beyond normal expiry. Needs investigation."
-    );
-    throw new Error(`Auth failed: ${res.status}`);
+    return { authFail: true, detail: `HTTP ${res.status}` };
   }
 
   if (!res.ok) {
@@ -137,18 +138,40 @@ async function fetchOpportunities(user, accessToken) {
     // real status embedded in extensions.code (discovered 2026-08-19: a real
     // token expiry silently failed for ~4 hours because only the HTTP-level
     // 401/403 check above was firing the alert).
-    const authError = json.errors.some((e) => e.extensions?.code === 401 || e.extensions?.code === 403);
-    if (authError) {
-      await notify(
-        user.ntfyTopic,
-        "Askable auth failing after refresh",
-        "The GraphQL API returned an auth error right after a successful token refresh — something's wrong beyond normal expiry. Needs investigation."
-      );
+    const authFail = json.errors.some((e) => e.extensions?.code === 401 || e.extensions?.code === 403);
+    if (authFail) {
+      return { authFail: true, detail: `GraphQL ${JSON.stringify(json.errors)}` };
     }
     throw new Error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
   }
 
-  return json.data.opportunitiesListSearch || [];
+  return { opportunities: json.data.opportunitiesListSearch || [] };
+}
+
+// A freshly minted access token is occasionally rejected by the GraphQL endpoint
+// with a 401/403 (seen 2026-08-29 and 2026-08-30), then works on the next 5-min
+// run — most likely Kinde->Askable propagation lag or a transient blip. Retry
+// the same token once after a short pause before treating it as a real auth
+// failure worth alerting on.
+async function fetchOpportunities(user, accessToken) {
+  let result = await requestOpportunities(user, accessToken);
+
+  if (result.authFail) {
+    console.log(`[${user.name}] opportunities fetch auth-failed (${result.detail}) — retrying once in 5s`);
+    await sleep(5000);
+    result = await requestOpportunities(user, accessToken);
+  }
+
+  if (result.authFail) {
+    await notify(
+      user.ntfyTopic,
+      "Askable auth failing after refresh",
+      `The opportunities query was rejected twice, ~5s apart, right after a successful token refresh (${result.detail}) — something's wrong beyond normal expiry. Needs investigation.`
+    );
+    throw new Error(`Auth failed after retry: ${result.detail}`);
+  }
+
+  return result.opportunities;
 }
 
 async function notify(topic, title, message) {
