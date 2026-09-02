@@ -149,15 +149,17 @@ async function requestOpportunities(user, accessToken) {
 }
 
 // A freshly minted access token is occasionally rejected by the GraphQL endpoint
-// with a 401/403 (seen 2026-08-29 and 2026-08-30), then works on the next 5-min
-// run — most likely Kinde->Askable propagation lag or a transient blip. Retry
-// the same token once after a short pause before treating it as a real auth
-// failure worth alerting on.
+// with a 401/403 (seen 2026-08-29, 2026-08-30, and back-to-back on 2026-09-02),
+// then works on the next 5-min run — most likely Kinde->Askable propagation lag
+// or a transient blip. Retry the same token up to twice, 5s apart, before
+// treating it as a real auth failure worth alerting on.
+const AUTH_RETRY_ATTEMPTS = 2;
+
 async function fetchOpportunities(user, accessToken) {
   let result = await requestOpportunities(user, accessToken);
 
-  if (result.authFail) {
-    console.log(`[${user.name}] opportunities fetch auth-failed (${result.detail}) — retrying once in 5s`);
+  for (let attempt = 1; result.authFail && attempt <= AUTH_RETRY_ATTEMPTS; attempt++) {
+    console.log(`[${user.name}] opportunities fetch auth-failed (${result.detail}) — retrying (${attempt}/${AUTH_RETRY_ATTEMPTS}) in 5s`);
     await sleep(5000);
     result = await requestOpportunities(user, accessToken);
   }
@@ -166,9 +168,9 @@ async function fetchOpportunities(user, accessToken) {
     await notify(
       user.ntfyTopic,
       "Askable auth failing after refresh",
-      `The opportunities query was rejected twice, ~5s apart, right after a successful token refresh (${result.detail}) — something's wrong beyond normal expiry. Needs investigation.`
+      `The opportunities query was rejected ${AUTH_RETRY_ATTEMPTS + 1} times, ~5s apart, right after a successful token refresh (${result.detail}) — something's wrong beyond normal expiry. Needs investigation.`
     );
-    throw new Error(`Auth failed after retry: ${result.detail}`);
+    throw new Error(`Auth failed after ${AUTH_RETRY_ATTEMPTS} retries: ${result.detail}`);
   }
 
   return result.opportunities;
