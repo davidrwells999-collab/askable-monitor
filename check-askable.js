@@ -99,6 +99,22 @@ function saveRefreshToken(secretName, newRefreshToken) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// `type` comes back from the API as a bare numeric code with no accessible
+// label field (see schema notes in README). Mapping confirmed by hand against
+// the Askable app's own display for live opportunities on 2026-09-02 — codes
+// 1 and 3 have never been observed, so their labels are unconfirmed.
+const OPPORTUNITY_TYPE_LABELS = {
+  2: "Interview",
+  4: "Multi date task",
+  5: "AI Interview",
+  6: "Survey",
+  7: "Recurring survey",
+};
+
+function opportunityTypeLabel(type) {
+  return OPPORTUNITY_TYPE_LABELS[type] || `Type ${type}`;
+}
+
 // One opportunities request. Returns { authFail: true, detail } on a 401/403
 // (HTTP-level or embedded in a GraphQL error's extensions.code), { opportunities }
 // on success, and throws for any other failure. Never notifies — the caller
@@ -222,7 +238,7 @@ async function runForUser(user) {
     for (const opp of opportunities) {
       const incentive = opp.config?.incentive;
       const reward = incentive ? `${incentive.currency_symbol}${incentive.value}` : "reward unknown";
-      console.log(`  - ${opp.name || "(untitled)"} | ${reward} | ${opp.type} | ${opp.status} | approved ${opp.approved_date}`);
+      console.log(`  - ${opp.name || "(untitled)"} | ${reward} | ${opportunityTypeLabel(opp.type)} | ${opp.status} | approved ${opp.approved_date}`);
     }
     console.log(`[${user.name}] ${opportunities.length} live total`);
     return;
@@ -241,7 +257,8 @@ async function runForUser(user) {
       const incentive = opp.config?.incentive;
       const reward = incentive ? `${incentive.currency_symbol}${incentive.value}` : "reward unknown";
       const title = opp.name || "New Askable opportunity";
-      await notify(user.ntfyTopic, `New Askable opportunity - ${reward}`, title);
+      const typeLabel = opportunityTypeLabel(opp.type);
+      await notify(user.ntfyTopic, `New Askable opportunity - ${reward} - ${typeLabel}`, title);
     }
   }
 

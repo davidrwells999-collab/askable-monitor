@@ -58,3 +58,10 @@ is no accessible description field on this query for a participant token.
 `search._user_id` must match the `askable_user_id` claim inside your own
 JWT (decode it to check) — passing any other value makes the whole query
 return `Unauthorized`, not just filter oddly.
+
+`type` is a bare numeric code with no accessible label field. The mapping in
+`OPPORTUNITY_TYPE_LABELS` (check-askable.js) was confirmed by hand against
+the Askable app's own display for live opportunities on 2026-09-02:
+`2` = Interview, `4` = Multi date task, `5` = AI Interview, `6` = Survey,
+`7` = Recurring survey. Codes `1` and `3` have never been observed and have
+no confirmed label — an unrecognized code falls back to `Type N`.
