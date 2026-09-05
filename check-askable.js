@@ -165,11 +165,12 @@ async function requestOpportunities(user, accessToken) {
 }
 
 // A freshly minted access token is occasionally rejected by the GraphQL endpoint
-// with a 401/403 (seen 2026-08-29, 2026-08-30, and back-to-back on 2026-09-02),
-// then works on the next 5-min run — most likely Kinde->Askable propagation lag
-// or a transient blip. Retry the same token up to twice, 5s apart, before
-// treating it as a real auth failure worth alerting on.
-const AUTH_RETRY_ATTEMPTS = 2;
+// with a 401/403 (seen 2026-08-29, 2026-08-30, back-to-back on 2026-09-02, and
+// three-in-a-row on 2026-09-05), then works on the next 5-min run — most likely
+// Kinde->Askable propagation lag or a transient blip. Retry the same token up
+// to 5 times, 5s apart, before treating it as a real auth failure worth
+// alerting on.
+const AUTH_RETRY_ATTEMPTS = 5;
 
 async function fetchOpportunities(user, accessToken) {
   let result = await requestOpportunities(user, accessToken);
