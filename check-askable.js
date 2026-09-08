@@ -235,11 +235,13 @@ async function runForUser(user) {
   const opportunities = await fetchOpportunities(user, accessToken);
 
   if (process.env.LIST_ONLY === "true") {
+    const seenDebug = loadSeenIds(user.seenFile);
     console.log(`[${user.name}] currently live:`);
     for (const opp of opportunities) {
       const incentive = opp.config?.incentive;
       const reward = incentive ? `${incentive.currency_symbol}${incentive.value}` : "reward unknown";
-      console.log(`  - ${opp.name || "(untitled)"} | ${reward} | ${opportunityTypeLabel(opp.type)} | ${opp.status} | approved ${opp.approved_date}`);
+      const seenFlag = seenDebug.has(opp._id) ? "ALREADY-SEEN" : "not-seen";
+      console.log(`  - ${opp._id} | ${seenFlag} | ${opp.name || "(untitled)"} | ${reward} | ${opportunityTypeLabel(opp.type)} | ${opp.status} | approved ${opp.approved_date}`);
     }
     console.log(`[${user.name}] ${opportunities.length} live total`);
     return;
