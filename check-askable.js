@@ -240,7 +240,7 @@ async function runForUser(user) {
     for (const opp of opportunities) {
       const incentive = opp.config?.incentive;
       const reward = incentive ? `${incentive.currency_symbol}${incentive.value}` : "reward unknown";
-      const seenFlag = seenDebug.has(opp._id) ? "ALREADY-SEEN" : "not-seen";
+      const seenFlag = seenDebug.has(opp._id) ? "live-last-poll" : "NEW-SINCE-LAST-POLL";
       console.log(`  - ${opp._id} | ${seenFlag} | ${opp.name || "(untitled)"} | ${reward} | ${opportunityTypeLabel(opp.type)} | ${opp.status} | approved ${opp.approved_date}`);
     }
     console.log(`[${user.name}] ${opportunities.length} live total`);
@@ -265,9 +265,13 @@ async function runForUser(user) {
     }
   }
 
-  // Merge (don't just overwrite) so anything that disappears/expires isn't re-alerted if it briefly reappears
-  const merged = new Set([...seen, ...currentIds]);
-  saveSeenIds(user.seenFile, merged);
+  // Overwrite (don't merge) with just this run's live ids. An opportunity that's
+  // gone for at least one full poll before reappearing — e.g. an AI interview
+  // filling its quota, dropping off, then reopening a slot — is a genuinely new
+  // chance to grab it and re-alerts (2026-09-08: Askable's own notifications
+  // caught these reopenings before this monitor did, because the old
+  // merge-forever behavior suppressed them permanently after the first alert).
+  saveSeenIds(user.seenFile, currentIds);
 }
 
 async function main() {
