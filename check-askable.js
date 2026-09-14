@@ -25,6 +25,7 @@ const USERS = [
     userId: process.env.ASKABLE_USER_ID,
     ntfyTopic: process.env.NTFY_TOPIC,
     seenFile: "seen-opportunities.json",
+    pendingFile: "pending-opportunities.json",
   },
   {
     name: "rachel",
@@ -33,6 +34,7 @@ const USERS = [
     userId: process.env.ASKABLE_USER_ID_RACHEL,
     ntfyTopic: process.env.NTFY_TOPIC_RACHEL,
     seenFile: "seen-opportunities.rachel.json",
+    pendingFile: "pending-opportunities.rachel.json",
   },
 ];
 
@@ -113,6 +115,24 @@ const OPPORTUNITY_TYPE_LABELS = {
 
 function opportunityTypeLabel(type) {
   return OPPORTUNITY_TYPE_LABELS[type] || `Type ${type}`;
+}
+
+// Freshness gate. Askable periodically re-surfaces long-since-approved
+// opportunities in the list query for a few minutes ("reissues") — on
+// 2026-09-09 every reissue that reached ntfy was 6-7 days past its
+// approved_date and never became visible in the app, while genuine new
+// opportunities that day were under 24h old. Any opportunity whose
+// approved_date (or, absent that, the creation time encoded in its Mongo
+// ObjectId) is older than this window is never alerted on.
+const FRESHNESS_WINDOW_MS = 4 * 24 * 60 * 60 * 1000;
+
+function opportunityRefTime(opp) {
+  // approved_date is epoch ms; an ObjectId's first 4 bytes are epoch seconds.
+  return opp.approved_date || parseInt(opp._id.slice(0, 8), 16) * 1000;
+}
+
+function isFresh(opp) {
+  return Date.now() - opportunityRefTime(opp) < FRESHNESS_WINDOW_MS;
 }
 
 // One opportunities request. Returns { authFail: true, detail } on a 401/403
@@ -236,27 +256,48 @@ async function runForUser(user) {
 
   if (process.env.LIST_ONLY === "true") {
     const seenDebug = loadSeenIds(user.seenFile);
+    const pendingDebug = loadSeenIds(user.pendingFile);
     console.log(`[${user.name}] currently live:`);
     for (const opp of opportunities) {
       const incentive = opp.config?.incentive;
       const reward = incentive ? `${incentive.currency_symbol}${incentive.value}` : "reward unknown";
-      const seenFlag = seenDebug.has(opp._id) ? "live-last-poll" : "NEW-SINCE-LAST-POLL";
-      console.log(`  - ${opp._id} | ${seenFlag} | ${opp.name || "(untitled)"} | ${reward} | ${opportunityTypeLabel(opp.type)} | ${opp.status} | approved ${opp.approved_date}`);
+      const state = seenDebug.has(opp._id)
+        ? "live-last-poll"
+        : pendingDebug.has(opp._id)
+          ? "awaiting-confirm"
+          : "NEW-THIS-POLL";
+      const ageDays = ((Date.now() - opportunityRefTime(opp)) / 86400000).toFixed(1);
+      const freshFlag = isFresh(opp) ? `fresh ${ageDays}d` : `STALE ${ageDays}d`;
+      console.log(`  - ${opp._id} | ${state} | ${freshFlag} | ${opp.name || "(untitled)"} | ${reward} | ${opportunityTypeLabel(opp.type)} | ${opp.status} | approved ${opp.approved_date}`);
     }
     console.log(`[${user.name}] ${opportunities.length} live total`);
     return;
   }
 
-  const seen = loadSeenIds(user.seenFile);
-  const currentIds = new Set(opportunities.map((o) => o._id));
+  const seen = loadSeenIds(user.seenFile);       // ids that were live at the previous poll
+  const pending = loadSeenIds(user.pendingFile); // ids first seen at the previous poll, not yet confirmed
+  const liveIds = new Set(opportunities.map((o) => o._id));
 
-  const newOnes = opportunities.filter((o) => !seen.has(o._id));
+  // Two-poll confirmation. An opportunity only alerts once it has survived from
+  // one poll to the next: a first sighting goes into `pending` and stays quiet,
+  // and it fires on the following poll only if it's still live. Anything that
+  // appears and vanishes inside a single poll interval (~5 min) never alerts —
+  // on 2026-09-09, 2 of 3 re-alerts were for opportunities already gone from the
+  // API within 10 minutes, long before the app would have shown them.
+  const confirmed = opportunities.filter((o) => pending.has(o._id));
+  const firstSeen = opportunities.filter((o) => !seen.has(o._id) && !pending.has(o._id));
 
-  if (newOnes.length === 0) {
-    console.log(`[${user.name}] No new opportunities. (${opportunities.length} total live)`);
+  const toAlert = confirmed.filter(isFresh);
+  for (const opp of confirmed.filter((o) => !isFresh(o))) {
+    const ageDays = ((Date.now() - opportunityRefTime(opp)) / 86400000).toFixed(1);
+    console.log(`[${user.name}] suppressed stale reissue (approved ${ageDays}d ago): ${opp._id} ${opp.name || "(untitled)"}`);
+  }
+
+  if (toAlert.length === 0) {
+    console.log(`[${user.name}] No new opportunities. (${opportunities.length} live, ${firstSeen.length} awaiting confirmation)`);
   } else {
-    console.log(`[${user.name}] ${newOnes.length} new opportunit${newOnes.length === 1 ? "y" : "ies"} found`);
-    for (const opp of newOnes) {
+    console.log(`[${user.name}] ${toAlert.length} new opportunit${toAlert.length === 1 ? "y" : "ies"} found`);
+    for (const opp of toAlert) {
       const incentive = opp.config?.incentive;
       const reward = incentive ? `${incentive.currency_symbol}${incentive.value}` : "reward unknown";
       const title = opp.name || "New Askable opportunity";
@@ -265,13 +306,15 @@ async function runForUser(user) {
     }
   }
 
-  // Overwrite (don't merge) with just this run's live ids. An opportunity that's
-  // gone for at least one full poll before reappearing — e.g. an AI interview
-  // filling its quota, dropping off, then reopening a slot — is a genuinely new
-  // chance to grab it and re-alerts (2026-09-08: Askable's own notifications
-  // caught these reopenings before this monitor did, because the old
-  // merge-forever behavior suppressed them permanently after the first alert).
-  saveSeenIds(user.seenFile, currentIds);
+  // State for the next poll. `seen` is this run's full live set; `pending` is
+  // only this run's first sightings — an unconfirmed id that didn't reappear
+  // here is simply dropped and never alerts. An opportunity that disappears for
+  // a full poll and later returns re-enters as a first sighting, so genuine
+  // reopenings (e.g. an AI interview freeing a slot) still alert, subject to the
+  // same confirmation and freshness gates (2026-09-08: the old merge-forever
+  // behavior suppressed those reopenings permanently after the first alert).
+  saveSeenIds(user.seenFile, liveIds);
+  saveSeenIds(user.pendingFile, new Set(firstSeen.map((o) => o._id)));
 }
 
 async function main() {

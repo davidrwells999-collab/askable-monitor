@@ -65,3 +65,29 @@ the Askable app's own display for live opportunities on 2026-09-02:
 `2` = Interview, `4` = Multi date task, `5` = AI Interview, `6` = Survey,
 `7` = Recurring survey. Codes `1` and `3` have never been observed and have
 no confirmed label — an unrecognized code falls back to `Type N`.
+
+## Alert filtering: confirmation delay + freshness gate
+
+Askable periodically re-surfaces long-since-approved opportunities in the
+list query for a few minutes at a time ("reissues"). They fired ntfy alerts
+but were gone — or never rendered — by the time the app was opened. Two
+gates suppress them:
+
+- **Confirmation delay.** A first sighting is recorded in
+  `pending-opportunities*.json` and stays quiet; it only alerts on the
+  *next* poll, and only if still live. Anything that appears and disappears
+  within one poll interval (~5 min) never alerts. Costs ~5 min of latency
+  on genuine new opportunities.
+- **Freshness gate.** An opportunity whose `approved_date` (or, absent
+  that, the creation time in its Mongo ObjectId) is older than
+  `FRESHNESS_WINDOW_MS` (4 days) is never alerted on, even if confirmed.
+  Observed reissues were 6-7 days past approval; genuine new opportunities
+  were under a day. Suppressed reissues are logged (`suppressed stale
+  reissue …`) rather than silently dropped.
+
+An opportunity that genuinely disappears for a full poll and later returns
+re-enters as a first sighting, so real reopenings (e.g. an AI interview
+freeing a slot) still alert — subject to both gates. Run with
+`LIST_ONLY=true` to see each live opportunity's state
+(`live-last-poll` / `awaiting-confirm` / `NEW-THIS-POLL`) and
+`fresh`/`STALE` age.
