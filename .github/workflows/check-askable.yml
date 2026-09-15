@@ -9,6 +9,10 @@ on:
         description: "List all currently live opportunities instead of checking for new ones"
         required: false
         default: "false"
+      test_ntfy:
+        description: "Send a one-off test ntfy notification instead of checking for new opportunities"
+        required: false
+        default: "false"
 
 permissions:
   contents: write
@@ -27,7 +31,30 @@ jobs:
         with:
           node-version: 20
 
+      - name: Send test ntfy notification
+        if: github.event.inputs.test_ntfy == 'true'
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOPIC_RACHEL: ${{ secrets.NTFY_TOPIC_RACHEL }}
+        run: |
+          sent=0
+          if [ -n "$NTFY_TOPIC" ]; then
+            curl -sf -H "Title: Askable monitor test" -H "Priority: default" -H "Tags: test_tube" \
+              -d "Manual test — if you see this, ntfy delivery to this topic is working." \
+              "https://ntfy.sh/$NTFY_TOPIC" && echo "sent to NTFY_TOPIC (dave)" && sent=1
+          fi
+          if [ -n "$NTFY_TOPIC_RACHEL" ]; then
+            curl -sf -H "Title: Askable monitor test" -H "Priority: default" -H "Tags: test_tube" \
+              -d "Manual test — if you see this, ntfy delivery to this topic is working." \
+              "https://ntfy.sh/$NTFY_TOPIC_RACHEL" && echo "sent to NTFY_TOPIC_RACHEL (rachel)" && sent=1
+          fi
+          if [ "$sent" = "0" ]; then
+            echo "No NTFY_TOPIC secrets set — nothing to test" >&2
+            exit 1
+          fi
+
       - name: Run check-askable
+        if: github.event.inputs.test_ntfy != 'true'
         env:
           ASKABLE_REFRESH_TOKEN: ${{ secrets.ASKABLE_REFRESH_TOKEN }}
           ASKABLE_USER_ID: ${{ secrets.ASKABLE_USER_ID }}
