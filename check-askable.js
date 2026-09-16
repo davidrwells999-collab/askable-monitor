@@ -92,14 +92,36 @@ async function refreshAccessToken(user) {
   return { accessToken: json.access_token, refreshToken: json.refresh_token };
 }
 
-function saveRefreshToken(secretName, newRefreshToken) {
-  execFileSync("gh", ["secret", "set", secretName, "--body", newRefreshToken], {
-    env: { ...process.env, GH_TOKEN: GH_SECRETS_PAT },
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// gh secret set against the GitHub Secrets API has twice (2026-09-15,
+// 2026-09-16) reported a false-negative HTTP 500 while the write actually
+// applied server-side — confirmed both times because the *next* poll refreshed
+// cleanly using the token this call supposedly failed to save. A retry is safe
+// even when the prior attempt truly did apply: re-setting a secret to the same
+// value is idempotent. Only treat it as a real, unrecoverable failure — and
+// alert on it — once every attempt has failed.
+const SECRET_SAVE_RETRY_ATTEMPTS = 3;
+
+async function saveRefreshToken(user, newRefreshToken) {
+  let lastErr;
+  for (let attempt = 1; attempt <= SECRET_SAVE_RETRY_ATTEMPTS; attempt++) {
+    try {
+      execFileSync("gh", ["secret", "set", user.refreshSecretName, "--body", newRefreshToken], {
+        env: { ...process.env, GH_TOKEN: GH_SECRETS_PAT },
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < SECRET_SAVE_RETRY_ATTEMPTS) {
+        console.log(`[${user.name}] gh secret set ${user.refreshSecretName} failed (attempt ${attempt}/${SECRET_SAVE_RETRY_ATTEMPTS}) — retrying in 5s`);
+        await sleep(5000);
+      }
+    }
+  }
+  throw lastErr;
+}
 
 // `type` comes back from the API as a bare numeric code with no accessible
 // label field (see schema notes in README). Mapping confirmed by hand against
@@ -242,7 +264,7 @@ async function runForUser(user) {
   const { accessToken, refreshToken } = await refreshAccessToken(user);
 
   try {
-    saveRefreshToken(user.refreshSecretName, refreshToken);
+    await saveRefreshToken(user, refreshToken);
   } catch (err) {
     await notify(
       user.ntfyTopic,
