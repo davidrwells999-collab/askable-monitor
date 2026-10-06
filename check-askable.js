@@ -25,7 +25,6 @@ const USERS = [
     userId: process.env.ASKABLE_USER_ID,
     ntfyTopic: process.env.NTFY_TOPIC,
     seenFile: "seen-opportunities.json",
-    pendingFile: "pending-opportunities.json",
   },
   {
     name: "rachel",
@@ -34,7 +33,6 @@ const USERS = [
     userId: process.env.ASKABLE_USER_ID_RACHEL,
     ntfyTopic: process.env.NTFY_TOPIC_RACHEL,
     seenFile: "seen-opportunities.rachel.json",
-    pendingFile: "pending-opportunities.rachel.json",
   },
 ];
 
@@ -278,16 +276,11 @@ async function runForUser(user) {
 
   if (process.env.LIST_ONLY === "true") {
     const seenDebug = loadSeenIds(user.seenFile);
-    const pendingDebug = loadSeenIds(user.pendingFile);
     console.log(`[${user.name}] currently live:`);
     for (const opp of opportunities) {
       const incentive = opp.config?.incentive;
       const reward = incentive ? `${incentive.currency_symbol}${incentive.value}` : "reward unknown";
-      const state = seenDebug.has(opp._id)
-        ? "live-last-poll"
-        : pendingDebug.has(opp._id)
-          ? "awaiting-confirm"
-          : "NEW-THIS-POLL";
+      const state = seenDebug.has(opp._id) ? "live-last-poll" : "NEW-THIS-POLL";
       const ageDays = ((Date.now() - opportunityRefTime(opp)) / 86400000).toFixed(1);
       const freshFlag = isFresh(opp) ? `fresh ${ageDays}d` : `STALE ${ageDays}d`;
       console.log(`  - ${opp._id} | ${state} | ${freshFlag} | ${opp.name || "(untitled)"} | ${reward} | ${opportunityTypeLabel(opp.type)} | ${opp.status} | approved ${opp.approved_date}`);
@@ -296,27 +289,23 @@ async function runForUser(user) {
     return;
   }
 
-  const seen = loadSeenIds(user.seenFile);       // ids that were live at the previous poll
-  const pending = loadSeenIds(user.pendingFile); // ids first seen at the previous poll, not yet confirmed
+  const seen = loadSeenIds(user.seenFile); // ids that were live at the previous poll
   const liveIds = new Set(opportunities.map((o) => o._id));
 
-  // Two-poll confirmation. An opportunity only alerts once it has survived from
-  // one poll to the next: a first sighting goes into `pending` and stays quiet,
-  // and it fires on the following poll only if it's still live. Anything that
-  // appears and vanishes inside a single poll interval (~5 min) never alerts —
-  // on 2026-09-09, 2 of 3 re-alerts were for opportunities already gone from the
-  // API within 10 minutes, long before the app would have shown them.
-  const confirmed = opportunities.filter((o) => pending.has(o._id));
-  const firstSeen = opportunities.filter((o) => !seen.has(o._id) && !pending.has(o._id));
+  // Alert on first sighting. A two-poll confirmation used to sit here (added
+  // 2026-09-09 to drop reissues that vanished within one poll), but the
+  // freshness gate alone covers those reissues, and the extra poll cost ~5 min —
+  // on 2026-10-06 a 5-minute £5 survey filled before it could ever alert.
+  const firstSeen = opportunities.filter((o) => !seen.has(o._id));
 
-  const toAlert = confirmed.filter(isFresh);
-  for (const opp of confirmed.filter((o) => !isFresh(o))) {
+  const toAlert = firstSeen.filter(isFresh);
+  for (const opp of firstSeen.filter((o) => !isFresh(o))) {
     const ageDays = ((Date.now() - opportunityRefTime(opp)) / 86400000).toFixed(1);
     console.log(`[${user.name}] suppressed stale reissue (approved ${ageDays}d ago): ${opp._id} ${opp.name || "(untitled)"}`);
   }
 
   if (toAlert.length === 0) {
-    console.log(`[${user.name}] No new opportunities. (${opportunities.length} live, ${firstSeen.length} awaiting confirmation)`);
+    console.log(`[${user.name}] No new opportunities. (${opportunities.length} live)`);
   } else {
     console.log(`[${user.name}] ${toAlert.length} new opportunit${toAlert.length === 1 ? "y" : "ies"} found`);
     for (const opp of toAlert) {
@@ -328,15 +317,12 @@ async function runForUser(user) {
     }
   }
 
-  // State for the next poll. `seen` is this run's full live set; `pending` is
-  // only this run's first sightings — an unconfirmed id that didn't reappear
-  // here is simply dropped and never alerts. An opportunity that disappears for
-  // a full poll and later returns re-enters as a first sighting, so genuine
+  // `seen` is this run's full live set. An opportunity that disappears for a
+  // full poll and later returns counts as a first sighting again, so genuine
   // reopenings (e.g. an AI interview freeing a slot) still alert, subject to the
-  // same confirmation and freshness gates (2026-09-08: the old merge-forever
-  // behavior suppressed those reopenings permanently after the first alert).
+  // freshness gate (2026-09-08: the old merge-forever behavior suppressed those
+  // reopenings permanently after the first alert).
   saveSeenIds(user.seenFile, liveIds);
-  saveSeenIds(user.pendingFile, new Set(firstSeen.map((o) => o._id)));
 }
 
 async function main() {
